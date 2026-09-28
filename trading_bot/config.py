@@ -111,6 +111,8 @@ class Config:
     overnight_entry_minute: int = 15 * 60 + 45  # the bar that closes at 15:50 New York time
     overnight_exit_after_minutes: int = 5       # sell once the first 5 minutes after the open have closed
     overnight_stop_pct: float = 0.02            # also sells in pre-market/after-hours if it falls this far
+    overnight_max_positions: int = 3            # prices can gap past stops overnight: keep it small
+    overnight_max_position_pct: float = 0.10    # each at most 10% of the account (so at most 30% overnight)
 
     # Extended hours. The overnight session (8 PM - 4 AM) trades on free data; pre-market (4 - 9:30 AM)
     # and after-hours (4 - 8 PM) need live extended-hours prices, which on Alpaca means the paid SIP feed:
@@ -132,7 +134,7 @@ class Config:
     learn_days: int = 10          # calendar days of history to replay each strategy on
     prior_strength: float = 10.0  # trades' worth of "assume average" before trusting a symbol's own record
     live_weight: float = 2.0      # a real trade counts as much as this many replayed ones
-    min_score: float = 0.05       # sit a symbol out unless the best strategy expects > this many R per trade
+    min_score: float = 0.10       # sit a symbol out unless the best strategy expects > this many R per trade
     cost_pct: float = 0.0005      # assumed round-trip slippage when replaying
     state_file: str = "bot_state.json"
 

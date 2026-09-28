@@ -296,7 +296,7 @@ class LearnerTests(unittest.TestCase):
 
     def test_live_results_persist_and_change_choice(self):
         c = cfg()
-        learner = Learner(c, backtester=lambda fn, bars, c, **kw: [0.2] * 10 if fn is trend else [0.1] * 10)
+        learner = Learner(c, backtester=lambda fn, bars, c, **kw: [0.5] * 10 if fn is trend else [0.3] * 10)
         learner.update("AAPL", [])
         self.assertEqual(learner.choose("AAPL")[0], "trend")
         for _ in range(10):
@@ -906,6 +906,20 @@ class BotTests(unittest.TestCase):
         TradingBot(c, learner=Learner(c, backtester=fake_backtest), client=client).run_once()
         self.assertEqual(len(client.orders), 1)
         self.assertEqual(client.overnight_flags, [True])
+
+    def test_overnight_holds_are_long_only_capped_and_small(self):
+        day = [(100, 100.3, 99.7, 100, 1000)] * 76  # up to the bar that closes at 15:50
+        syms = ["A", "B", "C", "D", "E"]
+        c = cfg(symbols=syms)
+        client = FakeClient(session_days(4, day), minutes_to_close=9)
+        bot = TradingBot(c, learner=Learner(c, backtester=lambda fn, bars, c, **kw: [1.0] * 10 if fn is overnight_hold
+                                            else [-1.0] * 10), client=client)
+        bot.run_once()
+        self.assertEqual(len(client.orders), 3)                          # at most 3 overnight holds
+        self.assertTrue(all(side == "buy" for side in client.sides))    # never overnight shorts
+        for symbol, qty, tp, sl in client.orders:
+            self.assertLessEqual(qty * 100, 100_000 * 0.10)               # each at most 10% of the account
+        self.assertNotIn("overnight_hold_short", bot.learner.allowed["A"])
 
     def test_overnight_hold_protected_outside_market_hours(self):
         client = FakeClient(make_bars(crossover_series()), is_open=False,

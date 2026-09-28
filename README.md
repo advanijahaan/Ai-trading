@@ -117,7 +117,7 @@ The last four come from published research on US stocks:
 | `breakout` | price breaks above its recent high on heavy volume | price falls below its recent low |
 | `orb` (opening range breakout) | on a stock trading far more than usual at the open (a "stock in play"), price breaks above the first 5 minutes' high after an up start ([Zarattini, Barbon & Aziz](https://papers.ssrn.com/sol3/papers.cfm?abstract_id=4729284)) | stop at the first 5 minutes' low, otherwise at the close |
 | `vwap_trend` | price crosses above VWAP, the day's volume-weighted average price that professional desks trade against ([Zarattini & Aziz](https://papers.ssrn.com/sol3/papers.cfm?abstract_id=4631351)) | price falls back below VWAP |
-| `overnight_hold` | at 3:50 PM, to hold overnight. Historically, most US stock gains came between the close and the next open ([Cliff, Cooper & Gulen](https://www.ssrn.com/abstract=1004081)). Overnight holds never count as day trades. | 9:35 AM the next morning |
+| `overnight_hold` | at 3:50 PM, to hold overnight. Historically, most US stock gains came between the close and the next open ([Cliff, Cooper & Gulen](https://www.ssrn.com/abstract=1004081)). Overnight holds never count as day trades. Buy-only, at most 3 at a time and 10% of the account each. | 9:35 AM the next morning |
 | `intraday_momentum` | at 3:30 PM, if the stock rose in the first half hour (previous close to 10:00) ([Gao, Han, Li & Zhou, 2018](https://papers.ssrn.com/sol3/papers.cfm?abstract_id=2440866)) | at the close |
 
 The `_short` versions (`trend_short`, `orb_short` and so on) are the mirror images. They bet on

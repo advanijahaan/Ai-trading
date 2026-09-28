@@ -23,6 +23,9 @@ from .risk import account_limits, daily_loss_hit, option_contracts, pick_option,
 from .strategy import LONG_STRATEGIES, STRATEGIES, annotate_sessions
 
 
+NEVER_CHOSEN = {"overnight_hold_short"}  # kept defined so trades opened before still resolve
+
+
 def _overnight(strategy_name):
     return bool(strategy_name) and getattr(STRATEGIES.get(strategy_name), "overnight", False)
 
@@ -131,11 +134,12 @@ class TradingBot(ExtendedHoursMixin):
 
     def _allowed(self, symbol):
         """Which strategies a symbol may use: bearish bets need a big enough account and either
-        options (puts) or a borrowable stock; crypto is long-only."""
+        options (puts) or a borrowable stock; crypto is long-only. Overnight holds are long-only too:
+        the research behind them is about prices rising overnight."""
         if is_crypto(symbol) or not self.limits.shorts:
             return list(LONG_STRATEGIES)
         if (symbol in self.cfg.options_underlyings and self.limits.options) or self._shortable(symbol):
-            return list(STRATEGIES)
+            return [n for n in STRATEGIES if n not in NEVER_CHOSEN]
         return list(LONG_STRATEGIES)
 
     def _day_trades_left(self, account, today):
@@ -254,7 +258,12 @@ class TradingBot(ExtendedHoursMixin):
             if candidate and (is_crypto(symbol) or stock_entries or late_ok):
                 candidates.append(candidate)
         candidates.sort(key=lambda c: -c[0])
+        overnight_count = sum(1 for t in self.open_trades.values() if _overnight(t.get("strategy")))
         for i, (score, symbol, choice, signal, bars) in enumerate(candidates):
+            if _overnight(choice):
+                if overnight_count >= self.cfg.overnight_max_positions:
+                    continue
+                overnight_count += 1
             if len(positions) + len(pending) >= self.limits.max_positions:
                 log.info("Max open positions reached; skipped %d weaker signals", len(candidates) - i)
                 break
@@ -358,7 +367,10 @@ class TradingBot(ExtendedHoursMixin):
 
         equity = float(account["equity"])
         cash = float(account["non_marginable_buying_power"] if crypto else account["buying_power"])
-        size = dict(side=signal.side, max_pct=self.limits.max_position_pct)
+        max_pct = self.limits.max_position_pct
+        if overnight:
+            max_pct = min(max_pct, self.cfg.overnight_max_position_pct)
+        size = dict(side=signal.side, max_pct=max_pct)
         qty = position_size(equity, cash, signal.price, signal.stop, self.cfg, fractional=crypto, **size)
         fractional = False
         if not qty and not crypto and signal.side == "long" and self._asset(symbol).get("fractionable"):
