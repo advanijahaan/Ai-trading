@@ -146,11 +146,13 @@ class Learner:
             return symbol.split("@", 1)[1]
         return "crypto" if "/" in symbol else "stock"
 
-    def update(self, symbol, bars, allowed=None):
+    def update(self, symbol, bars, allowed=None, cfg=None):
         """Replay the allowed strategies on the latest bars for `symbol`.
 
-        Short strategies are replayed as their long twin on the flipped chart.
+        Short strategies are replayed as their long twin on the flipped chart. `cfg` overrides the
+        strategy settings, e.g. for extended hours where live bars carry no volume.
         """
+        cfg = cfg or self.cfg
         group = self._group(symbol)
         crypto = group == "crypto"
         cost = {"crypto": self.cfg.crypto_cost_pct, "stock": self.cfg.cost_pct}.get(group, self.cfg.ext_cost_pct)
@@ -163,8 +165,8 @@ class Learner:
         for name in names:
             fn = self.strategies[name]
             base = getattr(fn, "base", None)
-            self.replay[symbol][name] = (self.backtester(base, flipped, self.cfg, **kwargs) if base
-                                         else self.backtester(fn, bars, self.cfg, **kwargs))
+            self.replay[symbol][name] = (self.backtester(base, flipped, cfg, **kwargs) if base
+                                         else self.backtester(fn, bars, cfg, **kwargs))
 
     def choose(self, symbol):
         """Return (best strategy name or None to sit out, {name: score})."""

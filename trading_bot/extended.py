@@ -11,6 +11,7 @@ Outside regular hours only limit orders work and stop orders don't, so here the 
 The overnight session runs on free data (quotes: "overnight" feed, history: "boats"). Pre-market and
 after-hours need live extended-hours prices, which on Alpaca means the paid SIP feed (extended_feed).
 """
+import dataclasses
 import logging
 import uuid
 from datetime import datetime, time, timedelta, timezone
@@ -52,6 +53,12 @@ def in_session(minute, name):
 
 class ExtendedHoursMixin:
     """Mixed into TradingBot; uses its client, learner, cfg, limits and open_trades."""
+
+    @property
+    def ext_cfg(self):
+        """Strategy settings outside regular hours. Live bars there are built from quotes, which carry no
+        volume, so breakout's volume check is off, in replays and live alike, to keep the two consistent."""
+        return dataclasses.replace(self.cfg, breakout_volume_mult=0.0)
 
     def _init_extended(self):
         self.ext_bars = {}         # (session, symbol) -> bars
@@ -176,7 +183,7 @@ class ExtendedHoursMixin:
         stale = [x for x in fresh if f"{x}@{name}" not in self.ext_replayed or
                  now - self.ext_replayed[f"{x}@{name}"] >= timedelta(minutes=self.cfg.replay_minutes)]
         for sym in stale[: self.cfg.max_replays_per_loop]:
-            self.learner.update(f"{sym}@{name}", fresh[sym], EXTENDED_STRATEGIES)
+            self.learner.update(f"{sym}@{name}", fresh[sym], EXTENDED_STRATEGIES, cfg=self.ext_cfg)
             self.ext_replayed[f"{sym}@{name}"] = now
         if minutes_left <= self.cfg.ext_no_entry_minutes:
             return
@@ -189,7 +196,7 @@ class ExtendedHoursMixin:
             choice, scores = self.learner.choose(key)
             if choice is None:
                 continue
-            signal = STRATEGIES[choice](bars, self.cfg)
+            signal = STRATEGIES[choice](bars, self.ext_cfg)
             if signal.action == "buy" and signal.side == "long":
                 log.info("%-9s [%s, %s] BUY signal: %s", sym, choice, name, signal.reason)
                 candidates.append((scores[choice], sym, choice, signal, bars))

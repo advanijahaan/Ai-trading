@@ -262,6 +262,18 @@ class OvernightTradingTests(unittest.TestCase):
         self.bot.run_once()
         self.assertEqual(self.client.extended_exits[0][:3], ("AAPL", "10", "sell"))
 
+    def test_breakout_fires_on_quote_built_bars_without_volume(self):
+        self.bot.learner = Learner(self.c, backtester=lambda fn, bars, c, **kw: [1.0] * 10 if fn is breakout
+                                   else [-1.0] * 10)
+        self.bot.run_once()                        # starts a live bar at the old price
+        self.client.quotes = {"AAPL": (101.0, 101.1)}
+        self.client.now += timedelta(minutes=1)
+        self.bot.run_once()                        # price jumps above the recent high (100.2)
+        self.client.now += timedelta(minutes=5)
+        self.bot.run_once()                        # the live bar closes with no volume
+        self.assertEqual(self.client.extended_entries[0][0], "AAPL")
+        self.assertEqual(self.bot.open_trades["AAPL"]["strategy"], "breakout")
+
     def test_pre_market_needs_paid_data(self):
         self.client.now = datetime(2026, 9, 29, 10, 1, tzinfo=timezone.utc)  # 6:01 AM New York
         self.run_two_loops()
