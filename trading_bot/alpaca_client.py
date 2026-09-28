@@ -160,6 +160,14 @@ class AlpacaClient:
             "time_in_force": "gtc", "client_order_id": f"stop-{norm(symbol)}-{uuid.uuid4().hex[:8]}",
         })
 
+    def submit_extended_entry(self, symbol, qty, limit_price, client_order_id):
+        """Limit buy that can fill in pre-market, after-hours and the overnight session."""
+        return self._trade("POST", "/orders", json={
+            "symbol": symbol, "qty": str(qty), "side": "buy", "type": "limit",
+            "limit_price": f"{limit_price:.2f}", "time_in_force": "day", "extended_hours": True,
+            "client_order_id": client_order_id,
+        })
+
     def submit_extended_exit(self, symbol, qty, side, limit_price):
         """Limit order that can fill in pre-market, after-hours and the overnight session.
         Cancels the position's other orders first (a bracket's stop holds the shares)."""
@@ -201,6 +209,24 @@ class AlpacaClient:
         return [a["symbol"] for a in assets
                 if a.get("tradable") and a.get("exchange") in STOCK_EXCHANGES and a["symbol"].isalpha()]
 
+    def get_overnight_tradable(self):
+        """Symbols Alpaca lets you trade in the overnight session (8 PM - 4 AM New York)."""
+        assets = self._trade("GET", "/assets", params={"status": "active", "asset_class": "us_equity"}) or []
+        return {a["symbol"] for a in assets
+                if a.get("tradable") and "overnight_tradable" in (a.get("attributes") or [])
+                and not a.get("overnight_halted")}
+
+    def get_latest_quotes(self, symbols, feed, batch=200):
+        """{symbol: (bid, ask)} right now. feed "overnight" is free and live during the overnight session."""
+        out = {}
+        for i in range(0, len(symbols), batch):
+            data = self._request("GET", f"{self.cfg.data_url}/stocks/quotes/latest", params={
+                "symbols": ",".join(symbols[i:i + batch]), "feed": feed}) or {}
+            for sym, q in (data.get("quotes") or {}).items():
+                if q.get("bp") and q.get("ap") and q["ap"] >= q["bp"]:
+                    out[sym] = (q["bp"], q["ap"])
+        return out
+
     def get_daily_stats(self, symbols, batch=200):
         """{symbol: (price, dollar_volume)} from the latest daily bar, fetched in batches."""
         out = {}
@@ -213,13 +239,14 @@ class AlpacaClient:
                     out[sym] = (bar["c"], bar["c"] * bar.get("v", 0))
         return out
 
-    def get_stock_bars(self, symbols, timeframe, lookback_days=5, batch=50):
-        """{symbol: bars} for many stocks, a few requests per batch instead of one per stock."""
+    def get_stock_bars(self, symbols, timeframe, lookback_days=5, batch=50, feed=None):
+        """{symbol: bars} for many stocks, a few requests per batch instead of one per stock.
+        feed "boats" gives overnight-session history (free, about 15 minutes behind)."""
         start = (datetime.now(timezone.utc) - timedelta(days=lookback_days)).isoformat()
         out = {s: [] for s in symbols}
         for i in range(0, len(symbols), batch):
             params = {"symbols": ",".join(symbols[i:i + batch]), "timeframe": timeframe, "start": start,
-                      "limit": 10000, "feed": self.cfg.data_feed, "adjustment": "raw"}
+                      "limit": 10000, "feed": feed or self.cfg.data_feed, "adjustment": "raw"}
             while True:
                 data = self._request("GET", f"{self.cfg.data_url}/stocks/bars", params=params)
                 for sym, bars in (data.get("bars") or {}).items():

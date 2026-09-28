@@ -140,6 +140,10 @@ class Learner:
         return (s_total + k * others_mean) / (s_n + k)
 
     def _group(self, symbol):
+        """Symbols only learn from others in their group. "AAPL@overnight" is Apple in the overnight
+        session, which behaves differently from the daytime market."""
+        if "@" in symbol:
+            return symbol.split("@", 1)[1]
         return "crypto" if "/" in symbol else "stock"
 
     def update(self, symbol, bars, allowed=None):
@@ -147,8 +151,10 @@ class Learner:
 
         Short strategies are replayed as their long twin on the flipped chart.
         """
-        crypto = self._group(symbol) == "crypto"
-        kwargs = {"eod_exit": not crypto, "cost_pct": self.cfg.crypto_cost_pct if crypto else self.cfg.cost_pct}
+        group = self._group(symbol)
+        crypto = group == "crypto"
+        cost = {"crypto": self.cfg.crypto_cost_pct, "stock": self.cfg.cost_pct}.get(group, self.cfg.ext_cost_pct)
+        kwargs = {"eod_exit": not crypto, "cost_pct": cost}
         names = [n for n in self.strategies if allowed is None or n in allowed]
         self.allowed[symbol] = names
         self._group_cache.clear()

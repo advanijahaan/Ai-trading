@@ -27,6 +27,21 @@ strategy works for each one and switches on its own.
 - **Crypto:** off. If it still holds crypto from before, it sells it. To turn crypto back on, add
   `BOT_CRYPTO=BTC/USD,ETH/USD` to `.env`.
 
+**When it trades (New York time):**
+
+| Session | Hours | What the bot does |
+|---|---|---|
+| Overnight | 8 PM – 4 AM, Sunday to Thursday nights | **Trades** the 100 most-traded stocks that allow overnight trading (free data). Buys only, limit orders, stops watched by the bot. Everything is sold by 3:50 AM. |
+| Pre-market | 4 – 9:30 AM | Protects open positions. Also **trades** if you add paid data: `BOT_EXTENDED_FEED=sip` |
+| Regular | 9:30 AM – 4 PM | Full trading |
+| After-hours | 4 – 8 PM | Protects open positions. Also **trades** with `BOT_EXTENDED_FEED=sip` |
+| Weekend | Friday 8 PM – Sunday 8 PM | Nothing: no market is open |
+
+Outside regular hours, trading is thin and prices jump more, so the bot learns each stock's overnight behaviour
+separately from its daytime behaviour. Turn it off with `BOT_EXTENDED=off`.
+Pre-market and after-hours trading needs Alpaca's paid "Algo Trader Plus" data, because the free data has
+almost no live prices then.
+
 ### How to see what it's making (phone or computer)
 
 1. Go to **https://app.alpaca.markets** in any web browser (phone or computer) and log in.

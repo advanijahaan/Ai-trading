@@ -112,6 +112,17 @@ class Config:
     overnight_exit_after_minutes: int = 5       # sell once the first 5 minutes after the open have closed
     overnight_stop_pct: float = 0.02            # also sells in pre-market/after-hours if it falls this far
 
+    # Extended hours. The overnight session (8 PM - 4 AM) trades on free data; pre-market (4 - 9:30 AM)
+    # and after-hours (4 - 8 PM) need live extended-hours prices, which on Alpaca means the paid SIP feed:
+    # set BOT_EXTENDED_FEED=sip after subscribing to turn those sessions on.
+    extended_trading: bool = True
+    extended_feed: str = ""
+    ext_universe_size: int = 100       # the most-traded stocks that can trade outside regular hours
+    ext_cost_pct: float = 0.001        # wider spreads outside regular hours
+    ext_flatten_minutes: int = 10      # sell everything this long before the session ends
+    ext_no_entry_minutes: int = 30     # no new trades this close to the session end
+    ext_limit_pct: float = 0.001       # limit orders reach this far past the quote so they fill
+
     # Exits for every trade: trail the stop once ahead, and don't sit in a trade all day
     trail_start_r: float = 1.0       # once up by 1x the amount risked...
     trail_r: float = 1.0             # ...keep the stop 1x the risk below the best price since entry
@@ -164,6 +175,9 @@ class Config:
             cfg.scan_stocks = False
         if os.getenv("BOT_OPTIONS", "").lower() in ("0", "off", "false", "no"):
             cfg.options_underlyings = []
+        if os.getenv("BOT_EXTENDED", "").lower() in ("0", "off", "false", "no"):
+            cfg.extended_trading = False
+        cfg.extended_feed = os.getenv("BOT_EXTENDED_FEED", cfg.extended_feed).lower()
         if os.getenv("BOT_PDT", "").lower() in ("0", "off", "false", "no"):
             cfg.pdt_protection = False
         if os.getenv("BOT_SHORTS", "").lower() in ("0", "off", "false", "no"):

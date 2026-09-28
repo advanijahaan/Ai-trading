@@ -17,6 +17,7 @@ from datetime import datetime, timedelta
 
 from .alpaca_client import AlpacaClient, AlpacaError, is_crypto, norm
 from .config import Config
+from .extended import ExtendedHoursMixin
 from .learner import Learner, trail_stop
 from .risk import account_limits, daily_loss_hit, option_contracts, pick_option, position_size
 from .strategy import LONG_STRATEGIES, STRATEGIES, annotate_sessions
@@ -47,7 +48,7 @@ def completed_bars(bars, timeframe, now):
     return bars
 
 
-class TradingBot:
+class TradingBot(ExtendedHoursMixin):
     def __init__(self, cfg, client=None, learner=None, dry_run=False):
         self.cfg = cfg
         self.client = client or AlpacaClient(cfg)
@@ -64,6 +65,8 @@ class TradingBot:
         self.bars = {}             # symbol -> recent closed-and-forming bars, kept between loops
         self.last_stock_bucket = None
         self.replayed_at = {}      # symbol -> when its strategies were last replayed
+        self.stock_open = False
+        self._init_extended()
 
     @property
     def open_trades(self):
@@ -168,7 +171,7 @@ class TradingBot:
     def run_once(self):
         clock = self.client.get_clock()
         now = _parse_ts(clock["timestamp"])
-        stock_open = clock["is_open"]
+        stock_open = self.stock_open = clock["is_open"]
         positions = {norm(p["symbol"]): p for p in self.client.get_positions() or []}
         entry_orders = [o for o in self.client.get_open_orders() or [] if self._is_entry_order(o)]
         pending = {norm(o["symbol"]) for o in entry_orders}
@@ -259,6 +262,13 @@ class TradingBot:
                 self._enter(symbol, choice, signal, bars, account, positions, pending, today)
             except AlpacaError as exc:
                 log.error("%s: %s", symbol, exc)
+
+        # 4) outside regular hours: trade the overnight session (and pre/after-hours with paid data)
+        if not stock_open:
+            try:
+                self._run_extended(now, account, positions, pending, entry_orders)
+            except AlpacaError as exc:
+                log.error("Extended hours: %s", exc)
         self.learner.save()
 
     def _fresh_stock_bars(self, symbols, now):
@@ -487,6 +497,8 @@ class TradingBot:
             pos = positions.get(norm(symbol))
             if not trade.get("managed", is_crypto(symbol)) or not pos:
                 continue
+            if trade.get("session") and not self.stock_open:
+                continue  # extended-hours trades are watched by _run_extended with limit orders
             price = float(pos["current_price"])
             if price <= trade["stop"] or price >= trade.get("target", math.inf):
                 why = "stop-loss" if price <= trade["stop"] else "take-profit"
@@ -512,7 +524,8 @@ class TradingBot:
                 risk = trade.get("risk") or abs(trade["entry"] - trade["stop"])
                 r = ((trade["entry"] - exit_price) if short else (exit_price - trade["entry"])) / risk
                 log.info("%s: trade closed at %.4g, %+.2fR -> learning for %s", symbol, exit_price, r, trade["strategy"])
-                self.learner.record_trade(trade.get("underlying", symbol), trade["strategy"], r)
+                self.learner.record_trade(trade.get("learn_key") or trade.get("underlying", symbol),
+                                          trade["strategy"], r)
             del self.open_trades[symbol]
             self.learner.save()
 
@@ -526,7 +539,19 @@ class TradingBot:
         targets = [p["symbol"] for p in positions.values() if not kept(p)]
         if not targets:
             return
-        if stocks_only:
+        if not self.stock_open:  # market orders don't work outside regular hours: sell with limits
+            for sym in targets:
+                pos = positions[norm(sym)]
+                if pos.get("asset_class") == "crypto":
+                    self._act(f"SELL {sym} ({reason})", lambda s=sym: self.client.close_position(s))
+                else:
+                    short = float(pos["qty"]) < 0
+                    price = float(pos["current_price"]) * (1.005 if short else 0.995)
+                    self._act(f"{'COVER' if short else 'SELL'} {sym} @ limit {price:.2f} ({reason})",
+                              lambda s=sym, q=pos["qty"], p=price, side="buy" if short else "sell":
+                              self.client.submit_extended_exit(s, q, side, p))
+                positions.pop(norm(sym))
+        elif stocks_only:
             for sym in targets:
                 self._act(f"SELL {sym} ({reason})", lambda s=sym: self.client.close_position(s))
                 positions.pop(norm(sym))

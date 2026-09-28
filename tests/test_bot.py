@@ -6,6 +6,7 @@ from unittest import mock
 
 from trading_bot.bot import TradingBot, completed_bars
 from trading_bot.config import Config
+from trading_bot.extended import extended_session, in_session
 from trading_bot.risk import account_limits, daily_loss_hit, option_contracts, pick_option, position_size
 import tempfile
 
@@ -185,6 +186,91 @@ class ExitRuleTests(unittest.TestCase):
         annotate_sessions(bars)
         results = backtest(overnight_hold, bars, cfg(cost_pct=0))
         self.assertAlmostEqual(results[-1], 0.5)  # bought 100 at 15:50, sold 101 next morning, risk 2%
+
+
+NY = timezone(timedelta(hours=-4))  # New York in September
+
+
+class ExtendedSessionTests(unittest.TestCase):
+    def test_session_calendar(self):
+        def at(day, hour, minute=0):  # 2026-09-27 is a Sunday
+            return datetime(2026, 9, day, hour, minute, tzinfo=NY)
+        self.assertEqual(extended_session(at(27, 21)), ("overnight", at(28, 4)))  # Sunday night
+        self.assertEqual(extended_session(at(28, 2))[0], "overnight")              # Monday 2 AM
+        self.assertEqual(extended_session(at(28, 5))[0], "pre")
+        self.assertEqual(extended_session(at(28, 12))[0], None)                    # regular hours
+        self.assertEqual(extended_session(at(28, 17))[0], "after")
+        self.assertEqual(extended_session(at(2, 21) + timedelta(days=30))[0], None)  # Friday 9 PM: closed
+        self.assertEqual(extended_session(at(26, 12))[0], None)                    # Saturday
+        self.assertTrue(in_session(23 * 60, "overnight") and in_session(60, "overnight"))
+        self.assertFalse(in_session(12 * 60, "overnight"))
+
+
+def overnight_bars(n=60):
+    """Overnight-session 5-minute bars (Monday 9 PM New York onwards)."""
+    start = datetime(2026, 9, 29, 1, 0, tzinfo=timezone.utc)
+    return [{"t": (start + timedelta(minutes=5 * i)).isoformat().replace("+00:00", "Z"),
+             "o": 100.0, "h": 100.2, "l": 99.8, "c": 100.0, "v": 500} for i in range(n)]
+
+
+class OvernightTradingTests(unittest.TestCase):
+    def setUp(self):
+        self.c = cfg(universe_size=5, symbols=[])
+        self.client = FakeClient(overnight_bars(), is_open=False, tradable=["AAPL"],
+                                 daily_stats={"AAPL": (100, 1e9)})
+        self.client.now = datetime(2026, 9, 29, 6, 1, tzinfo=timezone.utc)  # Tuesday 2:01 AM New York
+        self.client.quotes = {"AAPL": (100.0, 100.1)}
+        # every strategy "works" in replays, so the first one (trend) is chosen
+        learner = Learner(self.c, backtester=lambda fn, bars, c, **kw: [1.0] * 10)
+        self.bot = TradingBot(self.c, learner=learner, client=self.client)
+
+    def run_two_loops(self):
+        buy = lambda bars, c: Signal("buy", price=bars[-1]["c"], stop=bars[-1]["c"] - 1, target=bars[-1]["c"] + 2)
+        with mock.patch.dict(STRATEGIES, {"trend": buy}):
+            self.bot.run_once()                       # starts a live bar from the quote
+            self.client.now += timedelta(minutes=5)
+            self.bot.run_once()                       # that bar closes -> learn -> signal
+
+    def test_buys_with_a_limit_order_overnight(self):
+        self.run_two_loops()
+        symbol, qty, limit = self.client.extended_entries[0]
+        self.assertEqual(symbol, "AAPL")
+        self.assertAlmostEqual(limit, 100.1 * 1.001)
+        trade = self.bot.open_trades["AAPL"]
+        self.assertEqual((trade["session"], trade["learn_key"], trade["managed"]), ("overnight", "AAPL@overnight", True))
+        self.assertIn("boats", self.client.bar_feeds)
+        self.assertIn("overnight", self.client.quote_feeds)
+        self.assertEqual(self.client.orders, [])      # no regular (bracket) orders at night
+
+    def test_sells_with_a_limit_order_when_the_stop_breaks(self):
+        self.bot.open_trades["AAPL"] = {"strategy": "trend", "side": "long", "entry": 100.0, "stop": 99.0,
+                                        "target": 102.0, "risk": 1.0, "opened_at": "2026-09-29T06:00:00Z",
+                                        "managed": True, "session": "overnight", "learn_key": "AAPL@overnight"}
+        self.client.positions = [{"symbol": "AAPL", "qty": "10", "avg_entry_price": "100", "current_price": "98.9"}]
+        self.client.quotes = {"AAPL": (98.8, 98.9)}
+        self.bot.run_once()
+        self.bot.run_once()
+        self.assertEqual(len(self.client.extended_exits), 1)  # once, then waits for the fill
+        self.assertEqual(self.client.closed, [])              # never a market order at night
+
+    def test_everything_sold_before_the_session_ends(self):
+        self.client.now = datetime(2026, 9, 29, 7, 55, tzinfo=timezone.utc)  # 3:55 AM New York
+        self.bot.open_trades["AAPL"] = {"strategy": "trend", "side": "long", "entry": 100.0, "stop": 90.0,
+                                        "target": 120.0, "risk": 10.0, "opened_at": "2026-09-29T06:00:00Z",
+                                        "managed": True, "session": "overnight"}
+        self.client.positions = [{"symbol": "AAPL", "qty": "10", "avg_entry_price": "100", "current_price": "100"}]
+        self.bot.run_once()
+        self.assertEqual(self.client.extended_exits[0][:3], ("AAPL", "10", "sell"))
+
+    def test_pre_market_needs_paid_data(self):
+        self.client.now = datetime(2026, 9, 29, 10, 1, tzinfo=timezone.utc)  # 6:01 AM New York
+        self.run_two_loops()
+        self.assertFalse(hasattr(self.client, "extended_entries"))
+        self.c.extended_feed = "sip"
+        self.client.now += timedelta(minutes=5)
+        self.run_two_loops()
+        self.assertEqual(len(self.client.extended_entries), 1)
+        self.assertIn("sip", self.client.quote_feeds)
 
 
 class LearnerTests(unittest.TestCase):
@@ -379,6 +465,18 @@ class FakeClient:
     def get_movers(self, top=20):
         return getattr(self, "movers", [])
 
+    def get_overnight_tradable(self):
+        return set(getattr(self, "overnight_symbols", self.tradable))
+
+    def get_latest_quotes(self, symbols, feed):
+        self.quote_feeds = getattr(self, "quote_feeds", []) + [feed]
+        return {x: q for x, q in getattr(self, "quotes", {}).items() if x in symbols}
+
+    def submit_extended_entry(self, symbol, qty, limit_price, client_order_id):
+        self.extended_entries = getattr(self, "extended_entries", []) + [(symbol, qty, limit_price)]
+        self.open_orders.append({"id": "x1", "symbol": symbol, "side": "buy", "client_order_id": client_order_id})
+        return {"id": "x1"}
+
     def get_positions(self):
         return self.positions
 
@@ -389,8 +487,9 @@ class FakeClient:
         self.bar_requests.append(symbol)
         return self.bars_by_symbol.get(symbol, self.bars)
 
-    def get_stock_bars(self, symbols, timeframe, lookback_days=5):
+    def get_stock_bars(self, symbols, timeframe, lookback_days=5, feed=None):
         self.bar_requests.extend(symbols)
+        self.bar_feeds = getattr(self, "bar_feeds", []) + [feed]
         return {x: [dict(b) for b in self.bars_by_symbol.get(x, self.bars)] for x in symbols}
 
     def get_tradable_stocks(self):
