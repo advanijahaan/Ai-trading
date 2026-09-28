@@ -9,6 +9,7 @@ Run:  python -m trading_bot.bot            # trade in a loop
       python -m trading_bot.bot --report   # show what the bot has learned
 """
 import argparse
+import bisect
 import logging
 import time
 import math
@@ -69,6 +70,8 @@ class TradingBot(ExtendedHoursMixin):
         self.last_stock_bucket = None
         self.replayed_at = {}      # symbol -> when its strategies were last replayed
         self.stock_open = False
+        self.news = {}             # symbol -> sorted news times (ISO)
+        self.news_until = None     # newest article time fetched so far
         self._init_extended()
 
     @property
@@ -305,6 +308,7 @@ class TradingBot(ExtendedHoursMixin):
         except AlpacaError as exc:
             log.error("Couldn't download prices: %s", exc)
             return {}
+        self._update_news(now)
         cutoff = (now - timedelta(days=self.cfg.learn_days)).strftime("%Y-%m-%dT%H:%M:%SZ")
         fresh = {}
         for sym in symbols:
@@ -314,8 +318,45 @@ class TradingBot(ExtendedHoursMixin):
             done = completed_bars(bars, self.cfg.timeframe, now)
             if done and self.last_bar_seen.get(sym) != done[-1]["t"]:
                 self.last_bar_seen[sym] = done[-1]["t"]
-                fresh[sym] = annotate_sessions(done)
+                fresh[sym] = self._mark_news(sym, annotate_sessions(done))
         return fresh
+
+    def _update_news(self, now):
+        """Download news published since the last check (the first time: the whole learning window)."""
+        if not self.cfg.news_filter:
+            return
+        since = (_parse_ts(self.news_until) if self.news_until else now - timedelta(days=self.cfg.learn_days + 1))
+        try:
+            articles = self.client.get_news(since)
+        except AlpacaError as exc:
+            log.error("Couldn't download news: %s", exc)
+            return
+        for created, symbols in articles:
+            for sym in symbols:
+                times = self.news.setdefault(sym, [])
+                if not times or created > times[-1]:
+                    times.append(created)
+                elif created not in times:
+                    bisect.insort(times, created)
+            if not self.news_until or created > self.news_until:
+                self.news_until = created
+        if articles:
+            log.info("News: %d new articles", len(articles))
+
+    def _mark_news(self, symbol, bars):
+        """Mark each bar with _news: did this stock have news in the news_window_hours before the bar closed?"""
+        if not self.cfg.news_filter or self.news_until is None:
+            return bars
+        times = self.news.get(symbol, [])
+        window = timedelta(hours=self.cfg.news_window_hours)
+        step = timedelta(minutes=_timeframe_minutes(self.cfg.timeframe))
+        for b in bars:
+            end = _parse_ts(b["t"]) + step
+            lo = (end - window).strftime("%Y-%m-%dT%H:%M:%SZ")
+            hi = end.strftime("%Y-%m-%dT%H:%M:%SZ")
+            i = bisect.bisect_left(times, lo)
+            b["_news"] = i < len(times) and times[i] <= hi
+        return bars
 
     def _handle_symbol(self, symbol, bars, positions, pending):
         """Manage any open trade on this symbol; return an entry candidate

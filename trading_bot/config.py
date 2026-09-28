@@ -114,6 +114,11 @@ class Config:
     overnight_max_positions: int = 3            # prices can gap past stops overnight: keep it small
     overnight_max_position_pct: float = 0.10    # each at most 10% of the account (so at most 30% overnight)
 
+    # News (Alpaca's free Benzinga feed): momentum strategies need news in the last day, the bounce-back
+    # strategy needs none (news-driven moves continue, moves without news reverse)
+    news_filter: bool = True
+    news_window_hours: int = 24
+
     # Extended hours. The overnight session (8 PM - 4 AM) trades on free data; pre-market (4 - 9:30 AM)
     # and after-hours (4 - 8 PM) need live extended-hours prices, which on Alpaca means the paid SIP feed:
     # set BOT_EXTENDED_FEED=sip after subscribing to turn those sessions on.
@@ -177,6 +182,8 @@ class Config:
             cfg.scan_stocks = False
         if os.getenv("BOT_OPTIONS", "").lower() in ("0", "off", "false", "no"):
             cfg.options_underlyings = []
+        if os.getenv("BOT_NEWS", "").lower() in ("0", "off", "false", "no"):
+            cfg.news_filter = False
         if os.getenv("BOT_EXTENDED", "").lower() in ("0", "off", "false", "no"):
             cfg.extended_trading = False
         cfg.extended_feed = os.getenv("BOT_EXTENDED_FEED", cfg.extended_feed).lower()

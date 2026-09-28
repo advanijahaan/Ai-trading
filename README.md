@@ -144,6 +144,15 @@ whether you start with $10 or $100,000:
 | $2,000 and up | normal mode: up to 8 positions, plus short selling and options |
 | under $25,000 | stays within the US **day-trading limit** (3 same-day round trips in 5 business days), so a sell is never blocked. Crypto isn't affected. Turn this off with `BOT_PDT=off` if the rule doesn't apply to your account. |
 
+**It reads the news.** Every few minutes the bot downloads new articles from Alpaca's free news feed (Benzinga).
+Research finds that price moves caused by news tend to keep going, while moves without news tend to reverse
+([Alpha Architect summary](https://alphaarchitect.com/what-drives-momentum-and-reversal/)). So:
+- the "ride the move" strategies (`trend`, `breakout`, `orb`, `vwap_trend`, `intraday_momentum`) only buy a stock
+  that has had news in the last 24 hours;
+- `mean_reversion` only buys a stock that has **not** been in the news, so it doesn't catch a falling knife.
+
+The AI's replays apply the same rule, using the news history. Turn it off with `BOT_NEWS=off`.
+
 **How trades end:**
 - Every trade starts with a stop-loss.
 - Once a trade is up by the amount it risked, the stop follows the price up (1x the risk below the best price so

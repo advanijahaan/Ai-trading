@@ -201,6 +201,9 @@ def mirror(bars, k=None):
     k = k or bars[-1]["c"] ** 2
     flipped = [{"t": b["t"], "o": k / b["o"], "h": k / b["l"], "l": k / b["h"], "c": k / b["c"], "v": b["v"]}
                for b in bars]
+    for f, b in zip(flipped, bars):  # news doesn't depend on price direction
+        if "_news" in b:
+            f["_news"] = b["_news"]
     if bars and "_min" in bars[-1]:  # keep session data (cheap: no timestamp parsing again)
         for f, b in zip(flipped, bars):
             f["_day"], f["_min"] = b["_day"], b["_min"]
@@ -302,11 +305,36 @@ def overnight_hold(bars, cfg):
     return Signal("hold", price=b["c"], reason="waits for the close")
 
 
+def news_gate(fn, needs_news):
+    """Research on news and returns: moves driven by news tend to continue, moves without news tend to
+    reverse. So "ride the move" strategies only buy stocks with news in the last day (needs_news=True)
+    and the bounce-back strategy only buys stocks without it (needs_news=False). Bars without news data
+    (crypto, overnight) aren't filtered."""
+    def gated(bars, cfg):
+        sig = fn(bars, cfg)
+        if sig.action == "buy" and cfg.news_filter and bars and "_news" in bars[-1]:
+            if bars[-1]["_news"] != needs_news:
+                return replace(sig, action="hold",
+                               reason=f"{sig.reason}; skipped: {'no news today' if needs_news else 'stock is in the news'}")
+        return sig
+    gated.__name__ = fn.__name__
+    gated.__doc__ = fn.__doc__
+    return gated
+
+
+trend = news_gate(trend, True)
+breakout = news_gate(breakout, True)
+mean_reversion = news_gate(mean_reversion, False)
+orb = news_gate(orb, True)
+vwap_trend = news_gate(vwap_trend, True)
+intraday_momentum = news_gate(intraday_momentum, True)
+
 orb.hold_to_close = True
 intraday_momentum.hold_to_close = True
 overnight_hold.overnight = True
 
-LONG_STRATEGIES.update({"orb": orb, "vwap_trend": vwap_trend, "intraday_momentum": intraday_momentum,
+LONG_STRATEGIES.update({"trend": trend, "mean_reversion": mean_reversion, "breakout": breakout, "orb": orb,
+                        "vwap_trend": vwap_trend, "intraday_momentum": intraday_momentum,
                         "overnight_hold": overnight_hold})
 STRATEGIES = dict(LONG_STRATEGIES)
 STRATEGIES.update({f"{name}_short": short_version(fn) for name, fn in LONG_STRATEGIES.items()})

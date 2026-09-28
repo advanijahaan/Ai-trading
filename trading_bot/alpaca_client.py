@@ -227,6 +227,19 @@ class AlpacaClient:
                     out[sym] = (q["bp"], q["ap"])
         return out
 
+    def get_news(self, start, max_pages=600):
+        """[(created_at ISO, [symbols])] for every news article since `start` (Alpaca's free Benzinga feed)."""
+        data_root = self.cfg.data_url.rsplit("/", 1)[0]
+        params = {"start": start.strftime("%Y-%m-%dT%H:%M:%SZ"), "limit": 50, "sort": "asc"}
+        out = []
+        for _ in range(max_pages):
+            data = self._request("GET", f"{data_root}/v1beta1/news", params=params) or {}
+            out += [(a["created_at"], a.get("symbols") or []) for a in data.get("news") or []]
+            if not data.get("next_page_token"):
+                break
+            params["page_token"] = data["next_page_token"]
+        return out
+
     def get_daily_stats(self, symbols, batch=200):
         """{symbol: (price, dollar_volume)} from the latest daily bar, fetched in batches."""
         out = {}

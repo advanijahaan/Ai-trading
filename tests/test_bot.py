@@ -285,6 +285,49 @@ class OvernightTradingTests(unittest.TestCase):
         self.assertIn("sip", self.client.quote_feeds)
 
 
+class NewsTests(unittest.TestCase):
+    def test_gate(self):
+        bars = make_bars(crossover_series())
+        self.assertEqual(trend(bars, cfg()).action, "buy")          # no news data: not filtered
+        for b in bars:
+            b["_news"] = False
+        sig = trend(bars, cfg())
+        self.assertEqual(sig.action, "hold")
+        self.assertIn("no news today", sig.reason)
+        bars[-1]["_news"] = True
+        self.assertEqual(trend(bars, cfg()).action, "buy")
+        self.assertEqual(trend(bars, cfg(news_filter=False)).action, "buy")
+
+    def test_bounce_back_avoids_stocks_in_the_news(self):
+        closes = [100.0] * 20 + [100 - 1.0 * i for i in range(1, 16)] + [85.6 + 0.6 * i for i in range(6)]
+        bars = make_bars(closes)
+        self.assertEqual(mean_reversion(bars, cfg()).action, "buy")
+        bars[-1]["_news"] = True
+        self.assertEqual(mean_reversion(bars, cfg()).action, "hold")
+
+    def test_short_twin_sees_the_news_flag(self):
+        bars = make_bars(bearish_series())
+        for b in bars:
+            b["_news"] = False
+        self.assertEqual(STRATEGIES["trend_short"](bars, cfg()).action, "hold")
+
+    def test_bot_marks_bars_from_the_news_feed(self):
+        client = FakeClient(make_bars(crossover_series()))
+        last = client.bars[-1]["t"]
+        client.news = [(last, ["AAPL"])]
+        bot = TradingBot(cfg(), learner=trend_learner(), client=client)
+        bot.run_once()
+        self.assertTrue(bot.bars["AAPL"][-1]["_news"])
+        self.assertFalse(bot.bars["AAPL"][0]["_news"])  # days before the article
+        self.assertEqual(len(client.orders), 1)          # news today: the trend buy goes through
+
+    def test_bot_skips_momentum_buy_without_news(self):
+        client = FakeClient(make_bars(crossover_series()))
+        client.news = [("2026-09-01T00:00:00Z", ["MSFT"])]  # news feed works, but nothing on AAPL
+        TradingBot(cfg(), learner=trend_learner(), client=client).run_once()
+        self.assertEqual(client.orders, [])
+
+
 class LearnerTests(unittest.TestCase):
     def test_picks_best_and_shrinks_small_samples(self):
         results = {"trend": [0.5] * 20, "mean_reversion": [3.0], "breakout": [-1.0] * 5}
@@ -476,6 +519,9 @@ class FakeClient:
 
     def get_movers(self, top=20):
         return getattr(self, "movers", [])
+
+    def get_news(self, start):
+        return list(getattr(self, "news", []))
 
     def get_overnight_tradable(self):
         return set(getattr(self, "overnight_symbols", self.tradable))
