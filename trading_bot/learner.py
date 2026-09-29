@@ -94,6 +94,7 @@ class Learner:
         self.replay = {}   # symbol -> {strategy: [R, ...]} from the latest replay
         self.allowed = {}  # symbol -> strategy names it may use (e.g. no shorts for crypto)
         self._group_cache = {}  # (strategy, group) -> totals over every symbol; cleared when data changes
+        self.benched = set()    # strategies losing money in real trading lately (set by the bot)
 
     # --- persistence ---
     def _load(self):
@@ -169,10 +170,13 @@ class Learner:
                                          else self.backtester(fn, bars, cfg, **kwargs))
 
     def choose(self, symbol):
-        """Return (best strategy name or None to sit out, {name: score})."""
+        """Return (best strategy name or None to sit out, {name: score}). Benched strategies are never chosen."""
         scores = {name: self.score(name, symbol) for name in self.allowed.get(symbol, self.strategies)}
-        best = max(scores, key=scores.get)
-        choice = best if scores[best] > self.cfg.min_score else None
+        usable = {n: v for n, v in scores.items() if n not in self.benched}
+        if not usable:
+            return None, scores
+        best = max(usable, key=usable.get)
+        choice = best if usable[best] > self.cfg.min_score else None
         return choice, scores
 
     def scoreboard(self, symbol):

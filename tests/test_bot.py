@@ -328,6 +328,42 @@ class NewsTests(unittest.TestCase):
         self.assertEqual(client.orders, [])
 
 
+class BenchTests(unittest.TestCase):
+    def test_benched_strategy_is_never_chosen(self):
+        learner = Learner(cfg(), backtester=lambda fn, bars, c, **kw: [1.0] * 10 if fn is trend else [0.5] * 10)
+        learner.update("AAPL", [])
+        self.assertEqual(learner.choose("AAPL")[0], "trend")
+        learner.benched = {"trend"}
+        self.assertNotEqual(learner.choose("AAPL")[0], "trend")
+
+    def test_bot_benches_strategies_losing_in_real_trading(self):
+        client = FakeClient(make_bars(crossover_series()))
+        client.strategy_results = {"trend": [-100.0] * 6, "breakout": [-50.0] * 3, "orb": [80.0, -20.0] * 4}
+        bot = TradingBot(cfg(), learner=trend_learner(), client=client)
+        bot.run_once()
+        self.assertEqual(bot.learner.benched, {"trend"})   # breakout: too few trades to judge; orb: winning
+        self.assertEqual(client.orders, [])                 # trend was the only strategy replays liked
+
+    def test_reading_results_from_account_history(self):
+        from trading_bot.alpaca_client import AlpacaClient
+        c = AlpacaClient(cfg())
+        orders = [{"client_order_id": "orb-AAPL-1", "symbol": "AAPL", "filled_at": "2026-09-28T14:00:00Z",
+                   "submitted_at": "2026-09-28T14:00:00Z"},
+                  {"client_order_id": "d3adbeef-1234", "symbol": "AAPL", "filled_at": "2026-09-28T15:00:00Z",
+                   "submitted_at": "2026-09-28T15:00:00Z"},                        # the exit (untagged)
+                  {"client_order_id": "trend-MSFT-2", "symbol": "MSFT", "filled_at": "2026-09-28T14:00:00Z",
+                   "submitted_at": "2026-09-28T14:00:00Z"}]
+        fills = [{"id": "1", "symbol": "AAPL", "transaction_time": "2026-09-28T14:00:01Z", "side": "buy", "qty": "10", "price": "100"},
+                 {"id": "2", "symbol": "AAPL", "transaction_time": "2026-09-28T15:00:01Z", "side": "sell", "qty": "10", "price": "103"},
+                 {"id": "3", "symbol": "MSFT", "transaction_time": "2026-09-28T14:00:01Z", "side": "buy", "qty": "5", "price": "50"}]
+
+        def fake_trade(method, path, **kw):
+            return orders if path == "/orders" else fills
+        c._trade = fake_trade
+        results = c.get_strategy_results(datetime(2026, 9, 20, tzinfo=timezone.utc), {"orb", "trend"})
+        self.assertEqual(results, {"orb": [30.0]})          # MSFT is still open, so it isn't counted yet
+
+
 class LearnerTests(unittest.TestCase):
     def test_picks_best_and_shrinks_small_samples(self):
         results = {"trend": [0.5] * 20, "mean_reversion": [3.0], "breakout": [-1.0] * 5}
@@ -519,6 +555,9 @@ class FakeClient:
 
     def get_movers(self, top=20):
         return getattr(self, "movers", [])
+
+    def get_strategy_results(self, since, names):
+        return getattr(self, "strategy_results", {})
 
     def get_news(self, start):
         return list(getattr(self, "news", []))

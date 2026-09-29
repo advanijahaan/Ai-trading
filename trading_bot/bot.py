@@ -72,6 +72,7 @@ class TradingBot(ExtendedHoursMixin):
         self.stock_open = False
         self.news = {}             # symbol -> sorted news times (ISO)
         self.news_until = None     # newest article time fetched so far
+        self.bench_day = None
         self._init_extended()
 
     @property
@@ -194,6 +195,7 @@ class TradingBot(ExtendedHoursMixin):
         self._set_limits(account)
 
         today = now.date()
+        self._update_bench(now)
         if self.halted_day == today:
             return
         if daily_loss_hit(account, self.cfg):
@@ -320,6 +322,26 @@ class TradingBot(ExtendedHoursMixin):
                 self.last_bar_seen[sym] = done[-1]["t"]
                 fresh[sym] = self._mark_news(sym, annotate_sessions(done))
         return fresh
+
+    def _update_bench(self, now):
+        """Once a day: bench strategies whose recent real trades lost money overall. Replays can make a
+        strategy look good that doesn't hold up live; real results are the better judge. A benched
+        strategy gets another chance once its losing trades are older than bench_days."""
+        if not self.cfg.bench or self.bench_day == now.date():
+            return
+        try:
+            results = self.client.get_strategy_results(now - timedelta(days=self.cfg.bench_days), set(STRATEGIES))
+        except AlpacaError as exc:
+            log.error("Couldn't read past results: %s", exc)
+            return
+        self.bench_day = now.date()
+        benched = {name for name, pnl in results.items()
+                   if len(pnl) >= self.cfg.bench_min_trades and sum(pnl) < 0}
+        summary = ", ".join(f"{n} {len(p)} trades ${sum(p):+.0f}" for n, p in sorted(results.items()))
+        log.info("Real results, last %d days: %s", self.cfg.bench_days, summary or "none yet")
+        if benched != self.learner.benched:
+            log.info("Benched for losing money in real trading: %s", ", ".join(sorted(benched)) or "none")
+        self.learner.benched = benched
 
     def _update_news(self, now):
         """Download news published since the last check (the first time: the whole learning window)."""

@@ -139,6 +139,9 @@ class Config:
     learn_days: int = 10          # calendar days of history to replay each strategy on
     prior_strength: float = 10.0  # trades' worth of "assume average" before trusting a symbol's own record
     live_weight: float = 2.0      # a real trade counts as much as this many replayed ones
+    bench_days: int = 14           # look at this many days of real trades...
+    bench_min_trades: int = 6      # ...and bench a strategy with at least this many that lost money overall
+    bench: bool = True
     min_score: float = 0.10       # sit a symbol out unless the best strategy expects > this many R per trade
     cost_pct: float = 0.0005      # assumed round-trip slippage when replaying
     state_file: str = "bot_state.json"
@@ -182,6 +185,8 @@ class Config:
             cfg.scan_stocks = False
         if os.getenv("BOT_OPTIONS", "").lower() in ("0", "off", "false", "no"):
             cfg.options_underlyings = []
+        if os.getenv("BOT_BENCH", "").lower() in ("0", "off", "false", "no"):
+            cfg.bench = False
         if os.getenv("BOT_NEWS", "").lower() in ("0", "off", "false", "no"):
             cfg.news_filter = False
         if os.getenv("BOT_EXTENDED", "").lower() in ("0", "off", "false", "no"):

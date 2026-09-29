@@ -153,6 +153,11 @@ Research finds that price moves caused by news tend to keep going, while moves w
 
 The AI's replays apply the same rule, using the news history. Turn it off with `BOT_NEWS=off`.
 
+**Real results beat replays.** Once a day the bot reads its own trade history from Alpaca and **benches any strategy
+that lost money over its last 6 or more real trades** (within 14 days). A benched strategy gets another chance once
+those trades are older than 14 days. Because the history comes from Alpaca, this survives a fresh install.
+Turn it off with `BOT_BENCH=off`.
+
 **How trades end:**
 - Every trade starts with a stop-loss.
 - Once a trade is up by the amount it risked, the stop follows the price up (1x the risk below the best price so

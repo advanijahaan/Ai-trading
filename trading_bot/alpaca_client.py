@@ -240,6 +240,43 @@ class AlpacaClient:
             params["page_token"] = data["next_page_token"]
         return out
 
+    def get_strategy_results(self, since, strategy_names):
+        """{strategy: [dollar result of each closed trade]} from the account's own history since `since`.
+        A trade is a stock's buys and sells on one day that end flat; it's credited to the strategy named
+        in that day's entry order (the bot tags entries "<strategy>-<symbol>-<id>")."""
+        start = since.strftime("%Y-%m-%dT%H:%M:%SZ")
+        tagged, after = {}, start
+        while True:
+            orders = self._trade("GET", "/orders", params={"status": "closed", "after": after, "limit": 500,
+                                                           "direction": "asc"}) or []
+            for o in orders:
+                prefix = o.get("client_order_id", "").split("-")[0]
+                if prefix in strategy_names and o.get("filled_at"):
+                    tagged[(norm(o["symbol"]), o["filled_at"][:10])] = prefix
+            if len(orders) < 500:
+                break
+            after = orders[-1]["submitted_at"]
+        cash, shares, token = {}, {}, None
+        while True:
+            params = {"after": start, "direction": "asc", "page_size": 100}
+            if token:
+                params["page_token"] = token
+            fills = self._trade("GET", "/account/activities/FILL", params=params) or []
+            for f in fills:
+                key = (norm(f["symbol"]), f["transaction_time"][:10])
+                qty, price = float(f["qty"]), float(f["price"])
+                sign = 1 if f["side"] == "buy" else -1
+                cash[key] = cash.get(key, 0.0) - sign * qty * price
+                shares[key] = shares.get(key, 0.0) + sign * qty
+            if len(fills) < 100:
+                break
+            token = fills[-1]["id"]
+        results = {}
+        for key, pnl in cash.items():
+            if key in tagged and abs(shares[key]) < 1e-9:
+                results.setdefault(tagged[key], []).append(pnl)
+        return results
+
     def get_daily_stats(self, symbols, batch=200):
         """{symbol: (price, dollar_volume)} from the latest daily bar, fetched in batches."""
         out = {}
