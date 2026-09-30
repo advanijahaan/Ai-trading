@@ -1006,6 +1006,28 @@ class BotTests(unittest.TestCase):
             self.assertLessEqual(qty * 100, 100_000 * 0.10)               # each at most 10% of the account
         self.assertNotIn("overnight_hold_short", bot.learner.allowed["A"])
 
+    def test_held_stock_is_sold_even_before_it_is_relearned(self):
+        series = UP_THEN_DOWN
+        n = next(k for k in range(25, len(series) + 1) if trend(make_bars(series[:k]), cfg()).action == "sell")
+        client = FakeClient(make_bars(series[:n]),
+                            positions=[{"symbol": "AAPL", "avg_entry_price": "105", "current_price": "105"}])
+        bot = TradingBot(cfg(max_replays_per_loop=0), learner=trend_learner(), client=client)  # learns nothing
+        bot.open_trades["AAPL"] = {"strategy": "trend", "side": "long", "entry": 105.0, "stop": 90.0, "risk": 15.0,
+                                   "opened_at": client.now.isoformat().replace("+00:00", "Z")}
+        bot.run_once()
+        self.assertEqual(client.closed, ["AAPL"])
+        self.assertEqual(client.orders, [])  # but no new trades on unlearned stocks
+
+    def test_overnight_hold_sold_next_morning_even_if_exit_bar_missed(self):
+        client = FakeClient(make_bars(crossover_series()),  # "now" is mid-morning New York time
+                            positions=[{"symbol": "PATH", "qty": "-100", "avg_entry_price": "12.23",
+                                        "current_price": "12.20"}])
+        bot = TradingBot(cfg(), learner=trend_learner(), client=client)
+        bot.open_trades["PATH"] = {"strategy": "overnight_hold_short", "side": "short", "entry": 12.23,
+                                   "stop": 12.48, "risk": 0.25, "opened_at": "2026-09-23T19:51:00Z"}
+        bot.run_once()
+        self.assertEqual(client.closed, ["PATH"])
+
     def test_overnight_hold_protected_outside_market_hours(self):
         client = FakeClient(make_bars(crossover_series()), is_open=False,
                             positions=[{"symbol": "AAPL", "asset_class": "us_equity", "qty": "10",

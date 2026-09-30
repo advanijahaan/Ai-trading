@@ -14,14 +14,14 @@ import logging
 import time
 import math
 import uuid
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 from .alpaca_client import AlpacaClient, AlpacaError, is_crypto, norm
 from .config import Config
 from .extended import ExtendedHoursMixin
 from .learner import Learner, trail_stop
 from .risk import account_limits, daily_loss_hit, option_contracts, pick_option, position_size
-from .strategy import LONG_STRATEGIES, STRATEGIES, annotate_sessions
+from .strategy import LONG_STRATEGIES, OPEN_MIN, STRATEGIES, _ny_day_and_minute, annotate_sessions
 
 
 NEVER_CHOSEN = {"overnight_hold_short"}  # kept defined so trades opened before still resolve
@@ -242,7 +242,9 @@ class TradingBot(ExtendedHoursMixin):
         # 2) re-learn: replay strategies for the symbols whose replay is oldest (staggered, so each loop stays quick)
         stale = [x for x in fresh if x not in self.replayed_at
                  or now - self.replayed_at[x] >= timedelta(minutes=self.cfg.replay_minutes)]
-        stale.sort(key=lambda x: self.replayed_at.get(x, datetime.min.replace(tzinfo=now.tzinfo)))
+        holding = {norm(x) for x in positions} | {t.get("underlying") or x for x, t in self.open_trades.items()}
+        # stocks we hold first (their exits use what was learned), then the longest-unlearned
+        stale.sort(key=lambda x: (x not in holding, self.replayed_at.get(x, datetime.min.replace(tzinfo=now.tzinfo))))
         for symbol in stale[: self.cfg.max_replays_per_loop]:
             self.learner.update(symbol, fresh[symbol], self._allowed(symbol))
             self.replayed_at[symbol] = now
@@ -251,10 +253,13 @@ class TradingBot(ExtendedHoursMixin):
         stock_entries = stock_open and minutes_to_close > self.cfg.no_new_entries_minutes
         candidates = []
         for symbol, bars in fresh.items():
-            if symbol not in self.replayed_at:
-                continue  # not learned yet
+            learned = symbol in self.replayed_at
+            if not learned and symbol not in holding:
+                continue  # not learned yet, and nothing to sell
             try:
                 candidate = self._handle_symbol(symbol, bars, positions, pending)
+                if not learned:
+                    candidate = None  # manage the exit, but no new trade until it's learned
             except AlpacaError as exc:
                 log.error("%s: %s", symbol, exc)
                 continue
@@ -539,8 +544,15 @@ class TradingBot(ExtendedHoursMixin):
             timed = (self.cfg.max_hold_minutes and not getattr(fn, "hold_to_close", False)
                      and not getattr(fn, "overnight", False) and trade.get("opened_at", "").endswith("Z")
                      and now - _parse_ts(trade["opened_at"]) >= timedelta(minutes=self.cfg.max_hold_minutes))
-            if hit or timed:
-                why = "trailing stop" if hit else f"held {self.cfg.max_hold_minutes} minutes"
+            # an overnight hold is always sold the next morning, even if its exit bar was missed
+            morning_after = False
+            if getattr(fn, "overnight", False) and trade.get("opened_at", "").endswith("Z"):
+                opened_day, _ = _ny_day_and_minute(trade["opened_at"])
+                today, minute = _ny_day_and_minute(now.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"))
+                morning_after = opened_day < today and minute >= OPEN_MIN + self.cfg.overnight_exit_after_minutes
+            if hit or timed or morning_after:
+                why = ("trailing stop" if hit else "overnight hold: next morning" if morning_after
+                       else f"held {self.cfg.max_hold_minutes} minutes")
                 try:
                     self._act(f"EXIT {symbol} @ ~{price:.4g} ({why})", lambda s=symbol: self.client.close_position(s))
                     positions.pop(norm(symbol))
